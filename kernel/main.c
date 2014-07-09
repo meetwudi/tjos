@@ -1,0 +1,345 @@
+
+/*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                            main.c
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                                                    Forrest Yu, 2005
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
+
+#include "type.h"
+#include "const.h"
+#include "protect.h"
+#include "string.h"
+#include "proc.h"
+#include "tty.h"
+#include "console.h"
+#include "global.h"
+#include "proto.h"
+/*=====================================================================*
+							进程相关函数
+*=====================================================================*/
+int BeginProcess(int TaskID);//开始一个进程
+t_bool EndProcess(int TaskID);
+void Help();
+void ProMain();
+void sys_shutdown(PROCESS * p_proc);
+void strtolower(char * src);
+int strcmp(char * src, char * dst);
+void DisPlay();
+/*======================================================================*
+                            Tinix_main
+ *======================================================================*/
+PUBLIC int tinix_main()
+{
+	disp_str("-----\"tinix_main\" begins-----\n");
+	
+	int		i;
+	t_8		privilege;
+	t_8		rpl;
+	int		eflags;
+	for(i=0;i<NR_TASKS_PROCS ;i++){
+		if ( task_whole_list[i].task_or_no == TRUE )//如果在任务表里面编号为taskID是系统任务的话
+	{
+		privilege = PRIVILEGE_TASK;
+		rpl = RPL_TASK;
+		eflags = 0x1202;
+	}
+	else						//如果在任务表里面编号为taskID的是用户任务的话
+	{
+		privilege = PRIVILEGE_USER;		
+		rpl = RPL_USER;
+		eflags = 0x202;
+	}
+	strcpy(proc_table[i].p_name, task_whole_list[i].name);	// 拷贝name of the process
+	proc_table[i].pid	= i;			// 进程序号
+	//全部模拟书上代码p235，都是用于初始化进程表
+	proc_table[i].ldt_sel	= SELECTOR_LDT_FIRST + 8 * i;//修改ldt选择子
+	memcpy(&proc_table[i].ldts[0], &gdt[SELECTOR_KERNEL_CS >> 3], sizeof(DESCRIPTOR));
+	proc_table[i].ldts[0].attr1 = DA_C | privilege << 5;	// change the DPL
+	memcpy(&proc_table[i].ldts[1], &gdt[SELECTOR_KERNEL_DS >> 3], sizeof(DESCRIPTOR));
+	proc_table[i].ldts[1].attr1 = DA_DRW | privilege << 5;	// change the DPL
+	//以下用于调整各个寄存器
+	proc_table[i].regs.cs	= ((8 * 0) & SA_RPL_MASK & SA_TI_MASK) | SA_TIL | rpl;
+	proc_table[i].regs.ds	= ((8 * 1) & SA_RPL_MASK & SA_TI_MASK) | SA_TIL | rpl;
+	proc_table[i].regs.es	= ((8 * 1) & SA_RPL_MASK & SA_TI_MASK) | SA_TIL | rpl;
+	proc_table[i].regs.fs	= ((8 * 1) & SA_RPL_MASK & SA_TI_MASK) | SA_TIL | rpl;
+	proc_table[i].regs.ss	= ((8 * 1) & SA_RPL_MASK & SA_TI_MASK) | SA_TIL | rpl;
+	proc_table[i].regs.gs	= (SELECTOR_KERNEL_GS & SA_RPL_MASK) | rpl;
+	proc_table[i].regs.eip	= (t_32)task_whole_list[i].initial_eip;
+	proc_table[i].regs.esp	= (t_32)task_stack + STACK_SIZE_TOTAL - STACK_SIZE_COMMON * i;
+	proc_table[i].regs.eflags	= eflags;
+	proc_table[i].nr_tty = task_whole_list[i].defaultTTY;
+	proc_table[i].ticks = proc_table[i].priority = task_whole_list[i].priority;
+	proc_table[i].task_or_no = task_whole_list[i].task_or_no;
+}
+	k_reenter	= 0;
+	ticks		= 0;
+
+	p_proc_ready	= proc_table;
+	
+	init_clock();
+
+	restart();
+
+	while(1){}
+}
+
+
+/*======================================================================*
+                               进程相关函数
+ *======================================================================*/
+int BeginProcess(int TaskID)
+{
+	t_8		privilege;
+	t_8		rpl;
+	int		eflags;
+	privilege = PRIVILEGE_USER;		
+	rpl = RPL_USER;
+	eflags = 0x202;
+	strcpy(proc_table[TaskID+1].p_name, task_whole_list[TaskID+1].name);	// 拷贝name of the process
+	proc_table[TaskID+1].pid	= TaskID+1;			// 进程序号
+	//全部模拟书上代码p235，都是用于初始化进程表
+	proc_table[TaskID+1].ldt_sel	= SELECTOR_LDT_FIRST + 8 * (TaskID+1);//修改ldt选择子
+	memcpy(&proc_table[TaskID+1].ldts[0], &gdt[SELECTOR_KERNEL_CS >> 3], sizeof(DESCRIPTOR));
+	proc_table[TaskID+1].ldts[0].attr1 = DA_C | privilege << 5;	// change the DPL
+	memcpy(&proc_table[TaskID+1].ldts[1], &gdt[SELECTOR_KERNEL_DS >> 3], sizeof(DESCRIPTOR));
+	proc_table[TaskID+1].ldts[1].attr1 = DA_DRW | privilege << 5;	// change the DPL
+	//以下用于调整各个寄存器
+	proc_table[TaskID+1].regs.cs	= ((8 * 0) & SA_RPL_MASK & SA_TI_MASK) | SA_TIL | rpl;
+	proc_table[TaskID+1].regs.ds	= ((8 * 1) & SA_RPL_MASK & SA_TI_MASK) | SA_TIL | rpl;
+	proc_table[TaskID+1].regs.es	= ((8 * 1) & SA_RPL_MASK & SA_TI_MASK) | SA_TIL | rpl;
+	proc_table[TaskID+1].regs.fs	= ((8 * 1) & SA_RPL_MASK & SA_TI_MASK) | SA_TIL | rpl;
+	proc_table[TaskID+1].regs.ss	= ((8 * 1) & SA_RPL_MASK & SA_TI_MASK) | SA_TIL | rpl;
+	proc_table[TaskID+1].regs.gs	= (SELECTOR_KERNEL_GS & SA_RPL_MASK) | rpl;
+	proc_table[TaskID+1].regs.eip	= (t_32)task_whole_list[TaskID+1].initial_eip;
+	proc_table[TaskID+1].regs.esp	= (t_32)task_stack + STACK_SIZE_TOTAL - STACK_SIZE_COMMON *( TaskID+1);
+	proc_table[TaskID+1].regs.eflags	= eflags;
+	proc_table[TaskID+1].nr_tty = task_whole_list[TaskID+1].defaultTTY;
+	proc_table[TaskID+1].ticks = proc_table[TaskID+1].priority = task_whole_list[TaskID+1].priority;
+	proc_table[TaskID+1].task_or_no = task_whole_list[TaskID+1].task_or_no;
+	proc_table[TaskID+1].priority=5;
+}
+/*======================================================================*
+						EndProcess
+*=======================================================================*/
+t_bool EndProcess(int Pid)
+{
+	
+	if (proc_table[Pid+1].priority == 0)//原来就是空
+	{
+		return FALSE;
+	}
+	proc_table[Pid+1].priority = 0;
+	proc_table[Pid+1].p_name[0] = 0;
+	return TRUE;
+}
+
+
+/*======================================================================*
+								进程体函数
+*======================================================================*/
+
+/*======================================================================*/
+void ProMain()
+{
+	
+	/*===================================================================*
+								
+	*====================================================================*/
+	DisPlay();
+	char szCmd[256];
+	char szCmd_id[32];
+	int  id;
+	int i;
+	t_bool fIsRunning = TRUE;
+	clear();	//清屏
+	//显示欢迎信息
+	printf("                        ==================================\n");
+	printf("                                    virtual Tinux 1       \n");
+	printf("                             kernel 1.0.0 on a i386\n\n");
+	printf("                                    welcome !\n");
+	printf("							This	project is made by ShaoJinghong and HouJiajie!\n");
+	printf("                        ==================================\n");
+	do{
+		printf("[root@localhost root]#");
+		readacommand(szCmd);//读取一条指令
+		strtolower(szCmd);
+		if (!strcmp(szCmd, "shutdown"))//关闭系统
+		{
+			break;
+		}
+		else if (!strcmp(szCmd, "begin"))
+		{
+			printf("[Enter the pro-ID here]#");
+			readacommand(szCmd_id);
+			if(_atoi(szCmd_id,&id))
+			{
+				BeginProcess(id);
+			}
+				
+		}
+		else if (!strcmp(szCmd, "help"))
+		{
+			Help();
+		}
+		else if (!strcmp(szCmd, "clear"))
+		{
+			clear();
+			printf("                        ==================================\n");
+			printf("                              virtual Tinux 1             \n");
+			printf("                             kernel 1.0.0 on a i386\n\n");
+			printf("                                    welcome !\n");
+			printf("                        ==================================\n");
+		}
+		else if(!strcmp(szCmd,"end"))
+		{
+			printf("[Enter the pro_ID here]#");
+			readacommand(szCmd);
+			if(_atoi(szCmd_id,&id))
+			{
+				EndProcess(id);
+			}
+		}
+		else
+		{
+			printf("command not found .....\n");
+		}
+		milli_delay(200);
+	}while(TRUE);
+	EndProcess(1);
+	EndProcess(2);
+	EndProcess(3);
+	clear();
+	printf("\n\n\n\n\n\n");
+	printf("                        ==================================\n");
+	printf("                              virtual Linux 1             \n");
+	printf("                             kernel 1.0.0 on a i386\n\n");
+	printf("                            your OS has been shutdown...\n");
+	printf("                        ==================================\n");
+	for ( i = 0 ; i < 20 ;  ++i )
+	{
+		milli_delay(100);
+	}
+	shutdown();
+}
+
+/*======================================================================*
+								命令
+*======================================================================*/
+void Help()
+{
+	printf("=============================================================================\n");
+	printf("Command list	:\n");
+	printf("1. clear         : Clear the screen\n");
+	printf("2. shutdown      : Shut down the OS\n");
+	printf("3. help          : Show this help message\n");
+	printf("4. begin         : begin a test:1,2,3\n");
+	printf("5. end				 :	end a test:1,2,3\n");
+	printf("==============================================================================\n");		
+}
+
+
+/*======================================================================*/
+
+/*=============================================================================*
+								sys_shutdown//模拟关机
+===============================================================================*/
+void sys_shutdown(PROCESS * p_proc)
+{
+	int i;
+	disable_int();
+	for ( i = 0 ; i < 16 ; ++i )
+	{
+		disable_irq(i);
+	}
+	while(1) {}
+}
+
+
+/*======================================================================*
+							一些字符串方面的函数
+ *======================================================================*/
+
+
+
+/*======================================================================*
+                               strtolower
+ *======================================================================*/
+void strtolower(char * src)
+{
+	while (*src)
+	{
+		if ((*src >= 'A') && (*src <= 'Z'))
+		{
+			*src += 'a' - 'A';
+		}
+		++src;
+	}
+}
+
+
+/*======================================================================*
+                               strcmp//字符串是否匹配
+ *======================================================================*/
+ int strcmp(char * src, char * dst)
+{
+	while ( *src && *dst && *src == *dst) { ++src, ++dst; };
+	return *src - *dst;
+}
+/*=====================================================================
+						//开机界面
+======================================================================*/
+void DisPlay()
+{
+	int color = 0x7f;
+	clear();
+	printf("\n\n\n\n\n\n\n\n\n");
+	printf("                          Welcome to the TINIX \n");
+	printf("\n\n\n\n\n\n\n\n\n");
+	printf("                          Welcome to the TINIX \n");
+	milli_delay(1000);
+}
+
+/*======================================================================*
+                               TestA
+ *======================================================================*/
+void TestA()
+{
+	int i=0;
+	while(1){
+		disp_str("A");
+		disp_int(i++);
+		disp_str(".");
+		milli_delay(10);
+	}
+}
+
+
+/*======================================================================*
+                               TestB
+ *======================================================================*/
+void TestB()
+{
+	int i = 0x1000;
+	while(1){
+		disp_str("B");
+		disp_int(i++);
+		disp_str(".");
+		milli_delay(10);
+	}
+}
+
+
+/*======================================================================*
+                               TestC
+ *======================================================================*/
+void TestC()
+{
+	int i = 0x2000;
+	while(1){
+		disp_str("C");
+		disp_int(i++);
+		disp_str(".");
+		milli_delay(10);
+	}
+}
+
